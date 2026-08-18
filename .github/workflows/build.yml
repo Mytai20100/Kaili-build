@@ -40,15 +40,12 @@ jobs:
       - name: Install Kali archive keyring and debootstrap script
         run: |
           # Kali's debootstrap script and keyring aren't shipped in Debian/Ubuntu's
-          # debootstrap package, so we fetch them from the Kali repo and register
-          # the "kali-rolling" suite locally before calling debootstrap.
-          TMPDIR=$(mktemp -d)
-          cd "$TMPDIR"
-
-          wget -q http://http.kali.org/kali/pool/main/k/kali-archive-keyring/kali-archive-keyring_2025.1_all.deb || \
-          wget -q http://http.kali.org/kali/pool/main/k/kali-archive-keyring/kali-archive-keyring_2024.1_all.deb
-
-          sudo dpkg -i kali-archive-keyring*.deb || sudo apt-get install -f -y
+          # debootstrap package, so we fetch the signing key directly from Kali's
+          # archive (name-independent, unlike guessing a .deb package version)
+          # and register the "kali-rolling" suite locally before calling debootstrap.
+          sudo mkdir -p /usr/share/keyrings
+          wget -qO- https://archive.kali.org/archive-key.asc | \
+            gpg --dearmor | sudo tee /usr/share/keyrings/kali-archive-keyring.gpg > /dev/null
 
           DEBOOTSTRAP_DIR=$(dpkg -L debootstrap | grep '/usr/share/debootstrap$')
           SCRIPTS_DIR="$DEBOOTSTRAP_DIR/scripts"
@@ -92,7 +89,7 @@ jobs:
           sudo debootstrap \
             --arch=$ARCH \
             --variant=minbase \
-            --include=ca-certificates,locales,kali-archive-keyring \
+            --include=ca-certificates,locales \
             --foreign \
             kali-rolling \
             build/kali-${{ matrix.arch }} \
