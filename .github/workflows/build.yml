@@ -1,0 +1,282 @@
+name: Build Kali
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  build-kali:
+    name: Build Kali kali-rolling - ${{ matrix.arch }}
+    runs-on: ubuntu-latest
+
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, i386, armhf, arm64, armv7l]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: all
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support debootstrap wget gnupg
+
+      - name: Install Kali archive keyring and debootstrap script
+        run: |
+          # Kali's debootstrap script and keyring aren't shipped in Debian/Ubuntu's
+          # debootstrap package, so we fetch them from the Kali repo and register
+          # the "kali-rolling" suite locally before calling debootstrap.
+          TMPDIR=$(mktemp -d)
+          cd "$TMPDIR"
+
+          wget -q http://http.kali.org/kali/pool/main/k/kali-archive-keyring/kali-archive-keyring_2025.1_all.deb || \
+          wget -q http://http.kali.org/kali/pool/main/k/kali-archive-keyring/kali-archive-keyring_2024.1_all.deb
+
+          sudo dpkg -i kali-archive-keyring*.deb || sudo apt-get install -f -y
+
+          DEBOOTSTRAP_DIR=$(dpkg -L debootstrap | grep '/usr/share/debootstrap$')
+          SCRIPTS_DIR="$DEBOOTSTRAP_DIR/scripts"
+
+          sudo tee "$SCRIPTS_DIR/kali" > /dev/null <<'EOF'
+          mirror_style release
+          download_style apt
+          finddebs_style from-indices
+          variants - buildd fakechroot minbase
+          keyring /usr/share/keyrings/kali-archive-keyring.gpg
+          default_mirror http://http.kali.org/kali
+
+          if [ -e "$DEBOOTSTRAP_DIR/scripts/debian-common" ]; then
+              . "$DEBOOTSTRAP_DIR/scripts/debian-common"
+          elif [ -e /debootstrap/debian-common ]; then
+              . /debootstrap/debian-common
+          fi
+          EOF
+
+          sudo ln -sf kali "$SCRIPTS_DIR/kali-rolling"
+          sudo ln -sf kali "$SCRIPTS_DIR/kali-dev"
+          sudo ln -sf kali "$SCRIPTS_DIR/kali-last-snapshot"
+
+      - name: Create build directory
+        run: |
+          mkdir -p build/kali-${{ matrix.arch }}
+          mkdir -p artifacts
+
+      - name: Build Kali rootfs
+        run: |
+          ARCH="${{ matrix.arch }}"
+          if [[ "$ARCH" == "armv7l" ]]; then
+            ARCH="armhf"
+          fi
+          MIRROR="http://http.kali.org/kali"
+
+          echo "Building Kali kali-rolling for ${{ matrix.arch }} (debootstrap arch: $ARCH)"
+          echo "Using mirror: $MIRROR"
+
+          # Stage 1: Bootstrap with --foreign for cross-arch
+          sudo debootstrap \
+            --arch=$ARCH \
+            --variant=minbase \
+            --include=ca-certificates,locales,kali-archive-keyring \
+            --foreign \
+            kali-rolling \
+            build/kali-${{ matrix.arch }} \
+            $MIRROR
+
+          ROOTFS="build/kali-${{ matrix.arch }}"
+
+          # Copy QEMU static binary for second stage
+          if [[ "$ARCH" == "armhf" ]]; then
+            sudo cp /usr/bin/qemu-arm-static $ROOTFS/usr/bin/
+          elif [[ "$ARCH" == "arm64" ]]; then
+            sudo cp /usr/bin/qemu-aarch64-static $ROOTFS/usr/bin/
+          elif [[ "$ARCH" == "i386" ]]; then
+            sudo cp /usr/bin/qemu-i386-static $ROOTFS/usr/bin/ || true
+          fi
+
+          # Stage 2: Complete the bootstrap inside chroot
+          echo "Running second stage..."
+          sudo chroot $ROOTFS /debootstrap/debootstrap --second-stage
+
+      - name: Configure rootfs
+        run: |
+          ROOTFS="build/kali-${{ matrix.arch }}"
+
+          # Setup DNS
+          echo "Setting up DNS..."
+          sudo tee $ROOTFS/etc/resolv.conf > /dev/null <<EOF
+          nameserver 8.8.8.8
+          nameserver 8.8.4.4
+          nameserver 1.1.1.1
+          EOF
+
+          # Setup APT sources
+          echo "Setting up APT sources..."
+          sudo tee $ROOTFS/etc/apt/sources.list > /dev/null <<EOF
+          deb http://http.kali.org/kali kali-rolling main contrib non-free non-free-firmware
+          EOF
+
+          # Configure locales
+          sudo chroot $ROOTFS /bin/bash -c "echo 'en_US.UTF-8 UTF-8' >> /etc/locale.gen" || true
+          sudo chroot $ROOTFS /bin/bash -c "locale-gen" || true
+
+          # Add build info
+          sudo tee $ROOTFS/etc/build-info.txt > /dev/null <<EOF
+          Kali Version: kali-rolling
+          Architecture: ${{ matrix.arch }}
+          Build Date: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          Built by: GitHub Actions
+          Mirror: http://http.kali.org/kali
+          EOF
+
+          # Cleanup
+          sudo chroot $ROOTFS /bin/bash -c "apt-get clean" || true
+          sudo rm -rf $ROOTFS/var/cache/apt/archives/*.deb
+          sudo rm -rf $ROOTFS/tmp/*
+          sudo rm -rf $ROOTFS/var/tmp/*
+
+          # Remove QEMU static binary
+          sudo rm -f $ROOTFS/usr/bin/qemu-*-static
+
+      - name: Create tarball
+        run: |
+          cd build/kali-${{ matrix.arch }}
+          sudo tar czf ../../artifacts/kali-rolling-${{ matrix.arch }}.tar.gz .
+
+      - name: Get tarball info
+        run: |
+          ls -lh artifacts/
+          echo "Tarball created successfully"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: kali-rolling-${{ matrix.arch }}
+          path: artifacts/kali-rolling-${{ matrix.arch }}.tar.gz
+          retention-days: 30
+
+  create-release:
+    name: Create Release
+    needs: build-kali
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/master')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: all-artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release-assets
+          find all-artifacts -name "*.tar.gz" -exec cp {} release-assets/ \;
+          ls -lh release-assets/
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: kali-build-${{ github.run_number }}
+          name: Kali Builds - Run ${{ github.run_number }}
+          body: |
+            # Kali Linux Rootfs Builds
+
+            ---
+
+            ## English
+
+            ### Version
+            - **Kali Linux** (kali-rolling) - Rolling release
+
+            ### Architectures
+            `amd64` `i386` `arm64` `armhf` `armv7l`
+
+            ### Features
+            - Fully bootstrapped with debootstrap second-stage
+            - Pre-configured DNS (Google & Cloudflare)
+            - APT sources ready to use
+            - Locales configured (en_US.UTF-8)
+            - Ready for chroot/container use
+
+            ### Quick Start
+            ```bash
+            # Download
+            wget https://github.com/YOUR-REPO/releases/download/TAG/kali-rolling-arm64.tar.gz
+
+            # Extract
+            mkdir rootfs && tar xzf kali-rolling-arm64.tar.gz -C rootfs
+
+            # Use it (with QEMU for cross-arch)
+            sudo chroot rootfs /bin/bash
+
+            # Test basic commands
+            ls /usr/bin
+            apt update
+            dpkg --version
+            ```
+
+            ---
+
+            ## Tieng Viet
+
+            ### Phien Ban
+            - **Kali Linux** (kali-rolling) - Rolling release
+
+            ### Kien Truc
+            `amd64` `i386` `arm64` `armhf` `armv7l`
+
+            ### Tinh Nang
+            - Bootstrap hoan chinh voi debootstrap second-stage
+            - DNS da cau hinh san (Google & Cloudflare)
+            - APT sources san sang su dung
+            - Locales da cai dat (en_US.UTF-8)
+            - San sang cho chroot/container
+
+            ### Huong Dan Nhanh
+            ```bash
+            # Tai ve
+            wget https://github.com/YOUR-REPO/releases/download/TAG/kali-rolling-arm64.tar.gz
+
+            # Giai nen
+            mkdir rootfs && tar xzf kali-rolling-arm64.tar.gz -C rootfs
+
+            # Su dung (voi QEMU cho cross-arch)
+            sudo chroot rootfs /bin/bash
+
+            # Kiem tra lenh co ban
+            ls /usr/bin
+            apt update
+            dpkg --version
+            ```
+
+            ---
+
+            **Build Date:** ${{ github.event.head_commit.timestamp }}
+            **Total Builds:** 5 variants
+
+            **Note:** Kali does not officially support `armel`.
+
+            **Important:** For ARM architectures, you need QEMU user emulation:
+            ```bash
+            sudo apt-get install qemu-user-static
+            ```
+          files: release-assets/*
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
