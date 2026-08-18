@@ -191,86 +191,20 @@ jobs:
           tag_name: kali-build-${{ github.run_number }}
           name: Kali Builds - Run ${{ github.run_number }}
           body: |
-            # Kali Linux Rootfs Builds
-
+            # Kali Linux 
             ---
-
-            ## English
 
             ### Version
             - **Kali Linux** (kali-rolling) - Rolling release
 
             ### Architectures
             `amd64` `i386` `arm64` `armhf` `armv7l`
-
-            ### Features
-            - Fully bootstrapped with debootstrap second-stage
-            - Pre-configured DNS (Google & Cloudflare)
-            - APT sources ready to use
-            - Locales configured (en_US.UTF-8)
-            - Ready for chroot/container use
-
-            ### Quick Start
-            ```bash
-            # Download
-            wget https://github.com/YOUR-REPO/releases/download/TAG/kali-rolling-arm64.tar.gz
-
-            # Extract
-            mkdir rootfs && tar xzf kali-rolling-arm64.tar.gz -C rootfs
-
-            # Use it (with QEMU for cross-arch)
-            sudo chroot rootfs /bin/bash
-
-            # Test basic commands
-            ls /usr/bin
-            apt update
-            dpkg --version
-            ```
-
+            
             ---
-
-            ## Tieng Viet
-
-            ### Phien Ban
-            - **Kali Linux** (kali-rolling) - Rolling release
-
-            ### Kien Truc
-            `amd64` `i386` `arm64` `armhf` `armv7l`
-
-            ### Tinh Nang
-            - Bootstrap hoan chinh voi debootstrap second-stage
-            - DNS da cau hinh san (Google & Cloudflare)
-            - APT sources san sang su dung
-            - Locales da cai dat (en_US.UTF-8)
-            - San sang cho chroot/container
-
-            ### Huong Dan Nhanh
-            ```bash
-            # Tai ve
-            wget https://github.com/YOUR-REPO/releases/download/TAG/kali-rolling-arm64.tar.gz
-
-            # Giai nen
-            mkdir rootfs && tar xzf kali-rolling-arm64.tar.gz -C rootfs
-
-            # Su dung (voi QEMU cho cross-arch)
-            sudo chroot rootfs /bin/bash
-
-            # Kiem tra lenh co ban
-            ls /usr/bin
-            apt update
-            dpkg --version
-            ```
-
-            ---
-
+            
             **Build Date:** ${{ github.event.head_commit.timestamp }}
             **Total Builds:** 5 variants
 
-            **Note:** Kali does not officially support `armel`.
-
-            **Important:** For ARM architectures, you need QEMU user emulation:
-            ```bash
-            sudo apt-get install qemu-user-static
             ```
           files: release-assets/*
           draft: false
